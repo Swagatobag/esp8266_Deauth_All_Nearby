@@ -57,3 +57,4 @@ The author **disclaims any liability** from misuse or legal consequences.
 ---
 
 *Note:* For colors in environments supporting ANSI escape sequences, consider adding escape codes in the `Serial.println()` statements for a more colorful display. `Serial.println(COLOR_RED "Red Text" COLOR_RESET);`
+MY BSSID 9c:53:22:e7:2f:07
